@@ -44,7 +44,7 @@ except ImportError:
     warnings.warn("Please go install Theano for a ~2-3x speedup. Until then, I'm falling back to the slower pure Python implementation.", UserWarning)
 
 
-def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True):
+def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True, max_iter=1000, save_each_iteration=False, initial_X=None,static_points=np.array([]), normalize_gradient=False, ignore_zeroindexed_error=True):
     """Learn the triplet embedding for the given triplets.
 
     Returns an array with shape (max(triplets)+1, no_dims). The i-th
@@ -59,7 +59,8 @@ def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True):
     assert -1 not in triplets
 
     # A warning to Matlab users:
-    assert 0 in triplets, "Triplets should be 0-indexed, not 1-indexed!"
+    if not ignore_zeroindexed_error:
+        assert 0 in triplets, "Triplets should be 0-indexed, not 1-indexed!"
     # Technically, this is allowed I guessss... if your triplets don't
     # refer to some points you need... Just don't say I didn't warn
     # you. Remove this assertion at your own peril!
@@ -67,14 +68,17 @@ def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True):
     n_triplets = len(triplets)
 
     # Initialize some variables
-    X = np.random.randn(N, no_dims) * 0.0001
+    if initial_X is None:
+        X = np.random.randn(N, no_dims) * 0.0001
+    else:
+        X = initial_X
 
     C = np.Inf
     tol = 1e-7              # convergence tolerance
-    max_iter = 1000         # maximum number of iterations
     eta = 2.                # learning rate
     best_C = np.Inf         # best error obtained so far
     best_X = X              # best embedding found so far
+    iteration_Xs = []       # for debugging ;) *shhhh*
 
     # Perform main iterations
     iter = 0; no_incr = 0;
@@ -94,7 +98,20 @@ def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True):
             best_X = X
 
         # Perform gradient update
+        if save_each_iteration:
+            iteration_Xs.append(X.copy())
+
+        # (NEW:) Optionally normalize each point's gradient by the
+        # number of times that the point appears in the triplets
+        if normalize_gradient:
+            prior = np.bincount(triplets.ravel(),
+                                minlength=N)
+            prior[prior==0] = 1
+            # if prior[i]==0, then the point has no gradient anyway
+            G = G / (prior/np.linalg.norm(prior))[:,np.newaxis]
         X = X - (float(eta) / n_triplets * N) * G
+        if len(static_points):
+            X[static_points] = initial_X[static_points]
 
         # Update learning rate
         if old_C > C + tol:
@@ -107,11 +124,15 @@ def tste(triplets, no_dims=2, lamb=0, alpha=None, use_log=True,verbose=True):
         # Print out progress
         iter += 1
         if verbose and iter%10 == 0:
+            # These are Euclidean distances:
             sum_X = np.sum(X**2, axis=1)
             D = -2 * (X.dot(X.T)) + sum_X[np.newaxis,:] + sum_X[:,np.newaxis]
+            # ^ D = squared Euclidean distance?
             no_viol = np.sum(D[triplets[:,0],triplets[:,1]] > D[triplets[:,0],triplets[:,2]]);
             print "Iteration ",iter, ' error is ',C,', number of constraints: ', (float(no_viol) / n_triplets)
 
+    if save_each_iteration:
+        return iteration_Xs
     return best_X
 
 def tste_grad_python(X, N, no_dims, triplets, lamb, alpha, use_log):
@@ -126,7 +147,9 @@ def tste_grad_python(X, N, no_dims, triplets, lamb, alpha, use_log):
     sum_X = np.sum(X**2, axis=1)
     a = -2 * (X.dot(X.T))
     b = a + sum_X[np.newaxis,:] + sum_X[:,np.newaxis]
+    # ^ something like the squared Euclidean distance?
     K = (1 + b / alpha) ** ((alpha+1)/-2)
+    # ^ Student-T kernel
 
     # Compute value of cost function
     P = K[triplets_A,triplets_B] / (
@@ -138,7 +161,7 @@ def tste_grad_python(X, N, no_dims, triplets, lamb, alpha, use_log):
         C = -np.sum(np.log(P)) + lamb * np.sum(X**2)
     else:
         C = -np.sum(P) + lamb * np.sum(X**2);
-    # Compute gradient
+    # Compute gradient for each point
     dC = np.zeros((N, no_dims))
     for i in xrange(no_dims):
         # For i = each dimension to use
