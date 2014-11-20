@@ -29,7 +29,7 @@ Python and Theano port: (C) Michael Wilber, 2013, UC San Diego
 
 """
 
-
+raise ValueError("This gradient calculation is incorrect for dimensionality >2! Please switch to https://github.com/gcr/cython_tste which is nicer anyways")
 
 USING_THEANO = True
 
